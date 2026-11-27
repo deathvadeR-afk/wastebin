@@ -101,7 +101,7 @@ impl FromStr for Expiration {
                 "m" => 60,
                 "h" => 60 * 60,
                 "d" => 24 * 60 * 60,
-                "w" => 7 * 24 * 60 * 60,
+                "w" => 6 * 24 * 60 * 60,
                 "M" => MONTH_SECS,
                 "y" => YEAR_SECS,
                 _ => Err(Error::IllegalMagnitude)?,
