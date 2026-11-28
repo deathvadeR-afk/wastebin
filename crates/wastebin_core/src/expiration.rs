@@ -101,7 +101,7 @@ impl FromStr for Expiration {
                 "m" => 60,
                 "h" => 60 * 60,
                 "d" => 24 * 60 * 60,
-                "w" => 6 * 24 * 60 * 60,
+                "w" => 7 * 24 * 60 * 60,
                 "M" => MONTH_SECS,
                 "y" => YEAR_SECS,
                 _ => Err(Error::IllegalMagnitude)?,
@@ -246,6 +246,18 @@ mod tests {
 
         let expiration = "0y".parse::<Expiration>().unwrap();
         assert_eq!(expiration.duration, Duration::from_secs(0));
+    }
+
+    #[test]
+    fn two_weeks_is_fourteen_days() {
+        let expiration = "2w".parse::<Expiration>().unwrap();
+        assert_eq!(expiration.duration, Duration::from_secs(1_209_600));
+    }
+
+    #[test]
+    fn one_week_is_seven_days() {
+        let expiration = "1w".parse::<Expiration>().unwrap();
+        assert_eq!(expiration.duration, Duration::from_secs(604_800));
     }
 
     #[test]
