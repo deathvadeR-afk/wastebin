@@ -69,6 +69,32 @@ impl Expiration {
 
         parts
     }
+
+    /// Render the duration as compact text: each non-zero component from largest to smallest unit,
+    /// as a number followed by its unit letter (`y`, `M`, `w`, `d`, `h`, `m`, `s`), with no
+    /// separators. A zero duration renders as `0s`. A month is 30 days and a year is 365 days.
+    #[must_use]
+    pub fn to_compact(&self) -> String {
+        if self.duration.is_zero() {
+            return String::from("0s");
+        }
+
+        self.components()
+            .into_iter()
+            .map(|(value, unit)| {
+                let letter = match unit {
+                    Unit::Year => 'y',
+                    Unit::Month => 'M',
+                    Unit::Week => 'w',
+                    Unit::Day => 'd',
+                    Unit::Hour => 'h',
+                    Unit::Minute => 'm',
+                    Unit::Second => 's',
+                };
+                format!("{value}{letter}")
+            })
+            .collect()
+    }
 }
 
 /// Multiple expiration values in ordered fashion.
@@ -78,6 +104,55 @@ pub struct ExpirationSet(Vec<Expiration>);
 const MONTH_SECS: u64 = 30 * 24 * 60 * 60; // 30 days
 /// Rough number of seconds in a year
 const YEAR_SECS: u64 = 365 * 24 * 60 * 60; // 365 days
+
+/// Parse the seconds part of an expiration: plain digits, or one or more `<digits><unit>` pairs
+/// such as `1d1h`, each converted to seconds and summed. Units run from largest to smallest,
+/// each at most once; `prev_mag` is the seconds value of the unit read before this one
+/// (`u64::MAX` at the start).
+fn parse_secs(secs: &str, prev_mag: u64) -> Result<u64, Error> {
+    let Some(mag_pos) = secs.find(|c: char| !char::is_ascii_digit(&c)) else {
+        return secs.parse::<u64>().map_err(Error::ParsingNumber);
+    };
+    let (val, rest) = secs.split_at(mag_pos);
+
+    let val = val.parse::<u64>().map_err(Error::ParsingNumber)?;
+
+    let mag_end = rest
+        .find(|c: char| char::is_ascii_digit(&c))
+        .unwrap_or(rest.len());
+    let (mag, tail) = rest.split_at(mag_end);
+
+    let mag = match mag {
+        "s" => 1,
+        "m" => 60,
+        "h" => 60 * 60,
+        "d" => 24 * 60 * 60,
+        "w" => 7 * 24 * 60 * 60,
+        "M" => MONTH_SECS,
+        "y" => YEAR_SECS,
+        _ => Err(Error::IllegalMagnitude)?,
+    };
+
+    if mag >= prev_mag {
+        Err(Error::IllegalMagnitude)?;
+    }
+
+    let part = match val.checked_mul(mag) {
+        Some(val) => val,
+        None => Err(Error::Overflow)?,
+    };
+
+    if tail.is_empty() {
+        return Ok(part);
+    }
+
+    if !tail.contains(|c: char| !char::is_ascii_digit(&c)) {
+        Err(Error::IllegalMagnitude)?;
+    }
+
+    let rest = parse_secs(tail, mag)?;
+    part.checked_add(rest).ok_or(Error::Overflow)
+}
 
 /// A single [`Expiration`] can either be an unsigned number or an unsigned number followed by `=d`
 /// to denote a default expiration.
@@ -91,29 +166,7 @@ impl FromStr for Expiration {
             return Err(Error::Empty);
         };
 
-        let secs = if let Some(mag_pos) = secs.find(|c: char| !char::is_ascii_digit(&c)) {
-            let (val, mag) = secs.split_at(mag_pos);
-
-            let val = val.parse::<u64>().map_err(Error::ParsingNumber)?;
-
-            let mag = match mag {
-                "s" => 1,
-                "m" => 60,
-                "h" => 60 * 60,
-                "d" => 24 * 60 * 60,
-                "w" => 7 * 24 * 60 * 60,
-                "M" => MONTH_SECS,
-                "y" => YEAR_SECS,
-                _ => Err(Error::IllegalMagnitude)?,
-            };
-
-            match val.checked_mul(mag) {
-                Some(val) => val,
-                None => Err(Error::Overflow)?,
-            }
-        } else {
-            secs.parse::<u64>().map_err(Error::ParsingNumber)?
-        };
+        let secs = parse_secs(secs, u64::MAX)?;
 
         let default = parts.next().map_or(Ok(false), |p| {
             if parts.next().is_some() {
@@ -470,5 +523,51 @@ mod tests {
                 (42, Unit::Second)
             ]
         );
+    }
+
+    #[test]
+    fn compact_writes_mixed_units_without_separators() {
+        assert_eq!(Expiration::from_secs(90061).to_compact(), "1d1h1m1s");
+    }
+
+    #[test]
+    fn compact_leaves_out_zero_components_for_two_weeks() {
+        assert_eq!(Expiration::from_secs(1209600).to_compact(), "2w");
+    }
+
+    #[test]
+    fn compact_counts_month_as_30_days() {
+        assert_eq!(Expiration::from_secs(2592000).to_compact(), "1M");
+    }
+
+    #[test]
+    fn compact_counts_year_as_365_days() {
+        assert_eq!(Expiration::from_secs(31536000).to_compact(), "1y");
+    }
+
+    #[test]
+    fn compact_writes_zero_duration_as_0s() {
+        assert_eq!(Expiration::from_secs(0).to_compact(), "0s");
+    }
+
+    #[test]
+    fn compact_mixed_duration_parses_back() {
+        let text = Expiration::from_secs(90061).to_compact();
+        let parsed = text.parse::<Expiration>().unwrap();
+        assert_eq!(parsed.duration, Duration::from_secs(90061));
+    }
+
+    #[test]
+    fn compact_two_weeks_parses_back() {
+        let text = Expiration::from_secs(1209600).to_compact();
+        let parsed = text.parse::<Expiration>().unwrap();
+        assert_eq!(parsed.duration, Duration::from_secs(1209600));
+    }
+
+    #[test]
+    fn compact_zero_duration_parses_back() {
+        let text = Expiration::from_secs(0).to_compact();
+        let parsed = text.parse::<Expiration>().unwrap();
+        assert_eq!(parsed.duration, Duration::from_secs(0));
     }
 }
